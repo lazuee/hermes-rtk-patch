@@ -36,12 +36,11 @@ anchor_line = sys.argv[2]
 
 TEMPLATE = r'''# RTK - START
 try:
-    import re, shlex, shutil, subprocess
-    if shutil.which("rtk"):
-        _WRAP_RE = re.compile(r"^rtk\s+rewrite\s+(.+)$", re.DOTALL)
-        _RTK_RE = re.compile(r"^rtk(\s|$)")
-        _HEREDOC_RE = re.compile(r"(?<!<)<<(?!<)")
-        _blocked = []
+    import re, shutil, subprocess, time
+    if shutil.which("rtk") and not re.search(r"(?<!<)<<(?!<)", command):
+        _wrap = re.compile(r"^rtk\s+rewrite\s+(.+)$", re.DOTALL)
+        _pre = re.compile(r"^rtk(\s|$)")
+        _deadline = time.monotonic() + 2.0
 
         def _rw(c):
             fallback = c
@@ -52,41 +51,32 @@ try:
                 leading = c[:len(c) - len(c.lstrip())]
                 trailing = c[len(c.rstrip()):]
 
-                if _RTK_RE.match(stripped) and not _WRAP_RE.match(stripped):
-                    return c
-
                 inner = stripped
                 while True:
-                    m = _WRAP_RE.match(inner)
+                    m = _wrap.match(inner)
                     if not m:
                         break
                     inner = m.group(1).strip()
-
                 if inner != stripped:
                     fallback = leading + inner + trailing
+                if not inner or _pre.match(inner):
+                    return fallback
 
-                if not inner or _RTK_RE.match(inner):
+                remaining = _deadline - time.monotonic()
+                if remaining <= 0:
                     return fallback
 
                 res = subprocess.run(
                     ["rtk", "rewrite", inner],
-                    shell=False, timeout=2,
+                    stdin=subprocess.DEVNULL,
                     capture_output=True, text=True,
+                    encoding="utf-8", errors="replace",
+                    timeout=remaining,
                 )
-                rc = res.returncode
                 out = res.stdout.strip()
-
-                if rc == 2:
-                    msg = out or res.stderr.strip()
-                    if msg:
-                        _blocked.append(msg)
-                    return fallback
-                if rc not in (0, 3):
-                    return fallback
-
-                if not out or out == inner:
-                    return fallback
-                return leading + out + trailing
+                if res.returncode in (0, 3) and out and out != inner:
+                    return leading + out + trailing
+                return fallback
             except Exception:
                 return fallback
 
@@ -167,16 +157,12 @@ try:
             flush()
             return parts
 
-        if not _HEREDOC_RE.search(command):
-            _parts = _split_cmd(command)
-            if _parts is not None:
-                command = "".join(t if keep else _rw(t) for t, keep in _parts)
-                if _blocked:
-                    command = "printf '%s\\n' " + shlex.quote(_blocked[0]) + " >&2; false"
+        _parts = _split_cmd(command)
+        if _parts is not None:
+            command = "".join(t if keep else _rw(t) for t, keep in _parts)
 except Exception:
     pass
 # RTK - END
-
 '''
 
 with open(target_file, "r", encoding="utf-8") as f:
